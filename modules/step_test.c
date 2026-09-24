@@ -7,7 +7,7 @@
 #include "step_test.h"
 
 #define MOTOR 0
-
+/*oiuhwsds*/
 #define DEADBAND_STEP 0.02
 #define DEADBAND_HOLD_LOOPS 500     
 #define DEADBAND_SPEED_THRESHOLD 1.0  

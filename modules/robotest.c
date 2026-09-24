@@ -8,7 +8,7 @@
 #include <stdbool.h>
 #include <math.h>
 #include <signal.h>
-
+/*oiukhweods*/
 //sudo apt update
 //sudo apt install libgpiod2 libgpiod-dev
 
