@@ -1,123 +1,138 @@
 #define _GNU_SOURCE
-#include "../modules/encoder.h"
-#include "../modules/pwm.h"
-#include "../modules/speed_control.h"
-
-#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
+#include <stdbool.h>
+#include <signal.h>
 #include <time.h>
+#include <stdatomic.h>
 
-static volatile sig_atomic_t running = 1;
+#include "encoder.h"
+#include "pwm.h"
+#include "speed_control.h"
+#include "step_test.h"
 
-static void stop_handler(int signal_number)
+#define MOTOR 0
+#define LOOP_PERIOD_NS 1000000L   
+#define CYCLE_PERIOD_S 2.0     
+#define NUM_CYCLES 3
+
+atomic_bool running = true;
+
+static void handle_sigint(int sig)
 {
-    (void)signal_number;
-    running = 0;
+    (void)sig;
+    atomic_store(&running, false);
 }
 
-static void sleep_1ms(void)
+static double triangle_reference(double cycle_time)
 {
-    struct timespec interval = {0, 1000000};
-    clock_nanosleep(CLOCK_MONOTONIC, 0, &interval, NULL);
+    if (cycle_time < 1.0)
+    {
+        return 100.0 - 200.0 * cycle_time;
+    }
+    else
+    {
+        return -100.0 + 200.0 * (cycle_time - 1.0);
+    }
 }
 
-static int step_response(int motor)
+int main(void)
 {
-    FILE *log = fopen("step_response.csv", "w");
-    if (!log)
-        return -1;
-    fprintf(log, "time_ms,duty_cycle,speed,position\n");
-    const double duties[] = {0.0, 0.60, 0.0, -0.60, 0.60, 0.0};
-    const int durations[] = {1000, 1000, 2000, 1000, 1000, 0};
-    int elapsed_ms = 0;
-    for (size_t segment = 0; segment < sizeof(duties) / sizeof(duties[0]) && running; segment++) {
-        if (pwm_set_duty(motor, duties[segment]) != 0) {
-            fclose(log);
-            return -1;
-        }
-        for (int elapsed = 0; elapsed < durations[segment] && running; elapsed++) {
-            double speed = enc_get_speed(motor);
-            fprintf(log, "%d,%.6f,%.6f,%d\n", elapsed_ms, duties[segment], speed,
-                    enc_get_position(motor));
-            elapsed_ms++;
-            sleep_1ms();
-        }
-    }
-    if (pwm_set_duty(motor, 0.0) != 0) {
-        fclose(log);
-        return -1;
-    }
-    fclose(log);
-    return 0;
-}
+    signal(SIGINT, handle_sigint);
 
-static int speed_response(int motor)
-{
-    FILE *log = fopen("speed_control.csv", "w");
-    if (!log)
-        return -1;
-    fprintf(log, "time_ms,target_speed,measured_speed\n");
-    if (speed_control_init() != 0) {
-        fclose(log);
-        return -1;
-    }
-
-    const int cycle_duration_ms = 2000;
-    const int cycle_count = 3;
-    const int total_ms = cycle_duration_ms * cycle_count;
-    int result = 0;
-    for (int time_ms = 0; time_ms < total_ms && running; time_ms++) {
-        double cycle_time = (time_ms % cycle_duration_ms) / 1000.0;
-        double target_speed;
-        if (cycle_time < 1.0) {
-            target_speed = 100.0 - 200.0 * cycle_time;
-        }
-        else {
-            target_speed = -100.0 + 200.0 * (cycle_time - 1.0);
-        }  
-        double measured_speed = enc_get_speed(motor);
-        if (speed_control(motor, target_speed) != 0) {
-            result = -1;
-            break;
-        }
-        fprintf(log, "%d,%.6f,%.6f\n", time_ms, target_speed, measured_speed);
-        sleep_1ms();
-    }
-
-    if (speed_control(motor, 0.0) != 0)
-        result = -1;
-    speed_control_cleanup();
-    fclose(log);
-    return result;
-}
-
-int main(int argc, char **argv)
-{
-    signal(SIGINT, stop_handler);
-    if (pwm_init() != 0 || enc_init() != 0) {
-        fprintf(stderr, "failed to initialize PWM or encoder\n");
-        pwm_cleanup();
-        enc_cleanup();
+    if (pwm_init() != 0)
+    {
+        fprintf(stderr, "[ERROR] pwm_init failed\n");
         return EXIT_FAILURE;
     }
 
-    int result = 0;
-    const char *mode = argc > 1 ? argv[1] : "step";
-    if (strcmp(mode, "step") == 0)
-        result = step_response(0);
-    else if (strcmp(mode, "speed") == 0)
-        result = speed_response(0);
-    else if (strcmp(mode, "both") == 0) {
-        result = step_response(0);
-        if (result == 0 && running)
-            result = speed_response(0);
-    } else {
-        fprintf(stderr, "usage: %s [step|speed|both]\n", argv[0]);
-        result = -1;
+    if (encoder_init() != 0)
+    {
+        fprintf(stderr, "[ERROR] encoder_init failed\n");
+        pwm_cleanup();
+        return EXIT_FAILURE;
     }
+
+    struct timespec ts = {0, LOOP_PERIOD_NS};
+
+    step_test_init();
+
+    unsigned int loop_count = 0;
+    while (atomic_load(&running))
+    {
+        int still_running = step_test(loop_count);
+        clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
+        loop_count++;
+        if (still_running == 0)
+        {
+            break;
+        }
+    }
+
+    step_test_cleanup();
+
+    if (speed_control_init() != 0)
+    {
+        fprintf(stderr, "[ERROR] speed_control_init failed\n");
+        encoder_cleanup();
+        pwm_cleanup();
+        return EXIT_FAILURE;
+    }
+
+    FILE *speed_log = fopen("speed_control.csv", "w");
+    if (speed_log == NULL)
+    {
+        perror("speed_control.csv");
+        speed_control_cleanup();
+        encoder_cleanup();
+        pwm_cleanup();
+        return EXIT_FAILURE;
+    }
+    fprintf(speed_log, "time_ms,target_speed,measured_speed\n");
+
+    long t_ms = 0;
+    int cycle_num = 0;
+
+    while (atomic_load(&running) && cycle_num < NUM_CYCLES)
+    {
+        double elapsed_s = (double)t_ms / 1000.0;
+        double cycle_time = elapsed_s - cycle_num * CYCLE_PERIOD_S;
+
+        if (cycle_time >= CYCLE_PERIOD_S)
+        {
+            cycle_num++;
+            if (cycle_num >= NUM_CYCLES)
+            {
+                break;
+            }
+            cycle_time -= CYCLE_PERIOD_S;
+        }
+
+        double target_speed = triangle_reference(cycle_time);
+        double measured_speed = encoder_get_speed(MOTOR);
+
+        speed_control(MOTOR, target_speed);
+
+        fprintf(speed_log, "%ld,%f,%f\n", t_ms, target_speed, measured_speed);
+
+        clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
+        t_ms += 1;
+    }
+
+    for (int i = 0; i < 200; i++)
+    {
+        speed_control(MOTOR, 0.0);
+        clock_nanosleep(CLOCK_MONOTONIC, 0, &ts, NULL);
+    }
+
+    fflush(speed_log);
+    fclose(speed_log);
+
+    speed_control_cleanup();
+    encoder_cleanup();
     pwm_cleanup();
-    enc_cleanup();
-    return result == 0 ? EXIT_SUCCESS : EXIT_FAILURE;
+
+    printf("[DONE] step_response.csv and speed_control.csv written. "
+           "Completed %d triangular cycles.\n", cycle_num);
+    return EXIT_SUCCESS;
 }

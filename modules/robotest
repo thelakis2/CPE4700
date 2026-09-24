@@ -1,0 +1,125 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <time.h>
+#include <sched.h>
+#include <sys/mman.h>
+#include <stdatomic.h>
+#include <stdbool.h>
+#include <math.h>
+#include <signal.h>
+
+//sudo apt update
+//sudo apt install libgpiod2 libgpiod-dev
+
+// gcc -o robotest robotest.c encoder.c pwm.c speed_loop.c imu.c bno055.c -lgpiod -lpthread -lm
+
+#include "encoder.h"
+#include "pwm.h"
+#include "imu.h"
+#include "speed_loop.h"
+#include "balance_loop.h"
+#include "step_test.h"
+
+#define INTERVAL_NS 1000000 // 1 millisecond in nanoseconds
+#define PRIORITY 80         // Real-time priority (1-99)clear
+
+    // Define the atomic boolean
+atomic_bool running = true;
+
+void handle_sigint(int sig)
+{
+    (void)sig;
+    atomic_store(&running, false);
+}
+
+//int main(int argc, char *argv[])
+int main()
+{
+    signal(SIGINT, handle_sigint);
+
+    struct sched_param param;
+    struct timespec next_time;
+
+    // 1. Lock memory to prevent latency from page faults
+    if (mlockall(MCL_CURRENT | MCL_FUTURE) == -1)
+    {
+        perror("mlockall failed");
+        exit(EXIT_FAILURE);
+    }
+
+    // 2. Set FIFO real-time scheduler
+    memset(&param, 0, sizeof(param));
+    param.sched_priority = PRIORITY;
+    if (sched_setscheduler(0, SCHED_FIFO, &param) == -1)
+    {
+        perror("sched_setscheduler failed (run as root)");
+        exit(EXIT_FAILURE);
+    }
+
+    // 3. Get current monotonic clock time
+    if (clock_gettime(CLOCK_MONOTONIC, &next_time) == -1)
+    {
+        perror("clock_gettime failed");
+        exit(EXIT_FAILURE);
+    }
+
+    if(imu_init())
+    {
+        fprintf(stderr, "Failed to initialize IMU\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (encoder_init())
+    {
+        fprintf(stderr, "Failed to initialize encoders\n");
+        exit(EXIT_FAILURE);
+    }
+
+    if (pwm_init())
+    {
+        fprintf(stderr, "Failed to initialize pwms\n");
+        exit(EXIT_FAILURE);
+    }
+
+    step_test_init();
+
+    printf("Real-time loop started at 1ms intervals.\n");
+
+    // 4. Execution loop
+    for (unsigned int loop_count = 0; running && loop_count < 1000000; ++loop_count)
+    {
+        // Calculate next absolute wake-up time
+        next_time.tv_nsec += INTERVAL_NS;
+        if (next_time.tv_nsec >= 1000000000)
+        {
+            next_time.tv_sec += 1;
+            next_time.tv_nsec -= 1000000000;
+        }
+
+        // Sleep until the exact calculated absolute time
+        if (clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &next_time, NULL) != 0)
+        {
+            perror("clock_nanosleep failed");
+            break;
+        }
+//        balance_loop(loop_count);
+        if(step_test(loop_count) == 0)
+        {
+            // Step test is still active
+            break;
+        }
+
+    }
+
+
+    atomic_store(&running, false); // Signal other threads to stop
+
+    encoder_cleanup();
+    pwm_cleanup();
+    step_test_cleanup();
+
+    // Unlock memory before exiting
+    munlockall();
+    return 0;
+}
