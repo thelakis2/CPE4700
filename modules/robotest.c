@@ -12,13 +12,11 @@
 //sudo apt update
 //sudo apt install libgpiod2 libgpiod-dev
 
-// gcc -o robotest robotest.c encoder.c pwm.c speed_loop.c imu.c bno055.c -lgpiod -lpthread -lm
+// gcc -o robotest robotest.c encoder.c pwm.c imu.c bno055.c -lgpiod -lpthread -lm
 
 #include "encoder.h"
 #include "pwm.h"
 #include "imu.h"
-#include "speed_loop.h"
-#include "balance_loop.h"
 #include "step_test.h"
 
 #define INTERVAL_NS 1000000 // 1 millisecond in nanoseconds
@@ -70,7 +68,7 @@ int main()
         exit(EXIT_FAILURE);
     }
 
-    if (encoder_init())
+    if (enc_init())
     {
         fprintf(stderr, "Failed to initialize encoders\n");
         exit(EXIT_FAILURE);
@@ -115,7 +113,7 @@ int main()
 
     atomic_store(&running, false); // Signal other threads to stop
 
-    encoder_cleanup();
+    enc_cleanup();
     pwm_cleanup();
     step_test_cleanup();
 

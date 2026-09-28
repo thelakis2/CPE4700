@@ -7,13 +7,40 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+/*oiulkjased*/
+/* ---------- PWM DEFINITIONS ---------- */
+// Confirmed PWM channels
+// pin 15, pwmchip0 pwm0
+// pin 32, pwmchip3 pwm0
+// pin 33, pwmchip2 pwm0
+#define PWM_CHIP_PATH "/sys/class/pwm/pwmchip2"
+#define PWM_CHANNEL "0"
+#define PWM_PATH PWM_CHIP_PATH "/pwm" PWM_CHANNEL
+
+#define PWM_CHIP_PATH2 "/sys/class/pwm/pwmchip3"
+#define PWM_PATH2 PWM_CHIP_PATH2 "/pwm" PWM_CHANNEL
+
+#define PWM_PERIOD_NS 200000 // 10 kHz
+
+/* ---------- GPIO (Direction: PY.04) ---------- */
+#define GPIO_CHIP "/dev/gpiochip0"
+// Confirmed line numbers
+// pin 16, PY.04, line 126
+// pin 18, PY.03, line 125
+// pin 31, PQ.06, line 106
+// pin 36, PR.04, line 113
+#define DIR_LINE_OFFSET 106
+#define DIR_LINE_OFFSET2 113
+
+static struct gpiod_chip *chip;
+static struct gpiod_line *dir_line[2];
 
 #define PWM_MOTORS 2
 
-static const char *chip_path = "/sys/class/pwm/pwmchip0";
-static int channels[PWM_MOTORS] = {0, 1};
-static const char *direction_paths[PWM_MOTORS];
-static int initialized;
+static const char *chip_path = PWM_CHIP_PATH;
+static int channels[PWM_MOTORS] = {0, 0};
+static const char *direction_paths[PWM_MOTORS] = {NULL, NULL};
+static int initialized = 0;
 
 static int write_value(const char *path, const char *value)
 {

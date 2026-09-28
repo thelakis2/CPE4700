@@ -65,7 +65,7 @@ void step_test_init(void)
 
 static bool run_deadband_characterization(unsigned int loop_count)
 {
-    double speed = encoder_get_speed(MOTOR);
+    double speed = enc_get_speed(MOTOR);
     unsigned int elapsed = loop_count - db_phase_start_loop;
 
     switch (db_state)
@@ -196,8 +196,8 @@ static bool run_step_response(unsigned int loop_count)
 
     pwm_set_duty(MOTOR, (float)duty);
 
-    double speed = encoder_get_speed(MOTOR);
-    long position = encoder_get_count(MOTOR);
+    double speed = enc_get_speed(MOTOR);
+    long position = enc_get_position(MOTOR);
     if (step_response_csv != NULL)
     {
         fprintf(step_response_csv, "%u,%f,%f,%ld\n", loop_count, duty, speed, position);

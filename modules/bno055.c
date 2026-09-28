@@ -5,7 +5,7 @@
 #include <fcntl.h>
 #include <sys/ioctl.h>
 #include <linux/i2c-dev.h>
-
+/*oliua*/
 static int write_reg(
     int fd,
     uint8_t reg,

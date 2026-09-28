@@ -1,6 +1,6 @@
 #define _GNU_SOURCE
 #include "encoder.h"
-
+/*liukhdsf*/
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>

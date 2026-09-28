@@ -3,7 +3,7 @@
  * compile command
  *          $ gcc -o imu_test1 imu_test1.c bno055.c
  */
-
+/*kaeujf*/
 #include <stdio.h>
 #include <unistd.h>
 

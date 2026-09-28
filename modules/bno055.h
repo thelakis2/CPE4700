@@ -13,7 +13,7 @@
 
 #define BNO055_EULER_H_LSB      0x1A
 #define BNO055_QUATERNION_W_LSB 0x20
-
+/*ilusf*/
 #define BNO055_CONFIG_MODE      0x00
 #define BNO055_NDOF_MODE        0x0C
 
