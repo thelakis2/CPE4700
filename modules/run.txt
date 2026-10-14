@@ -1,0 +1,4 @@
+BNO055 initialized
+Real-time loop started at 1ms intervals.
+[RESULT] positive_deadband = 0.80
+[RESULT] negative_deadband = -0.80

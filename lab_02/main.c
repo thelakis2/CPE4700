@@ -6,6 +6,7 @@
 #include "encoder.h"
 #include "imu.h"
 #include "pwm.h"
+#include "bno055.h"
  
 static void print_status(void)
 {

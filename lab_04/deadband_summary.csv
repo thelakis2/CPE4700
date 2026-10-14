@@ -1,0 +1,3 @@
+direction,deadband_duty,status
+positive,+0.04,detected
+negative,-0.04,detected

@@ -2,100 +2,100 @@
 #include "pwm.h"
 
 #include <errno.h>
+#include <fcntl.h>
+#include <gpiod.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-/*oiulkjased*/
-/* ---------- PWM DEFINITIONS ---------- */
-// Confirmed PWM channels
-// pin 15, pwmchip0 pwm0
-// pin 32, pwmchip3 pwm0
-// pin 33, pwmchip2 pwm0
-#define PWM_CHIP_PATH "/sys/class/pwm/pwmchip2"
+
+/* ---------- PWM (sysfs) ----------
+ * motor 0: pin 33 -> pwmchip2/pwm0
+ * motor 1: pin 32 -> pwmchip3/pwm0
+ */
+#define PWM_MOTORS 2
 #define PWM_CHANNEL "0"
-#define PWM_PATH PWM_CHIP_PATH "/pwm" PWM_CHANNEL
+#define PWM_PERIOD_NS 200000 /* 5 kHz (matches the known-good driver code) */
+#define PWM_PERIOD_STR "200000"
+#define PWM_LIMIT 0.8
 
-#define PWM_CHIP_PATH2 "/sys/class/pwm/pwmchip3"
-#define PWM_PATH2 PWM_CHIP_PATH2 "/pwm" PWM_CHANNEL
+static const char *chip_paths[PWM_MOTORS] = {
+    "/sys/class/pwm/pwmchip2",
+    "/sys/class/pwm/pwmchip3",
+};
 
-#define PWM_PERIOD_NS 200000 // 10 kHz
-
-/* ---------- GPIO (Direction: PY.04) ---------- */
+/* ---------- Direction GPIO (MDD10 DIR pins, libgpiod v1) ----------
+ * motor 0: pin 31, PQ.06, line 106
+ * motor 1: pin 36, PR.04, line 113
+ */
 #define GPIO_CHIP "/dev/gpiochip0"
-// Confirmed line numbers
-// pin 16, PY.04, line 126
-// pin 18, PY.03, line 125
-// pin 31, PQ.06, line 106
-// pin 36, PR.04, line 113
-#define DIR_LINE_OFFSET 106
-#define DIR_LINE_OFFSET2 113
+static const unsigned int dir_offsets[PWM_MOTORS] = {106, 113};
 
 static struct gpiod_chip *chip;
-static struct gpiod_line *dir_line[2];
-
-#define PWM_MOTORS 2
-
-static const char *chip_path = PWM_CHIP_PATH;
-static int channels[PWM_MOTORS] = {0, 0};
-static const char *direction_paths[PWM_MOTORS] = {NULL, NULL};
+static struct gpiod_line *dir_line[PWM_MOTORS];
 static int initialized = 0;
 
-static int write_value(const char *path, const char *value)
+static int write_sysfs(const char *path, const char *value)
 {
-    FILE *file = fopen(path, "w");
-    if (!file)
+    int fd = open(path, O_WRONLY);
+    if (fd < 0) {
+        perror(path);
         return -errno;
-    int result = fputs(value, file) < 0 ? -errno : 0;
-    if (result == 0 && fclose(file) != 0)
-        return -errno;
-    return result;
+    }
+    if (write(fd, value, strlen(value)) < 0) {
+        int err = errno;
+        fprintf(stderr, "Failed to write %s to %s: %s\n", value, path, strerror(err));
+        close(fd);
+        return -err;
+    }
+    close(fd);
+    return 0;
 }
 
-static int pwm_path(char *path, size_t size, int motor, const char *name)
+static void motor_path(char *out, size_t size, int motor, const char *leaf)
 {
-    int written = snprintf(path, size, "%s/pwm%d/%s", chip_path,
-                           channels[motor], name);
-    return written < 0 || (size_t)written >= size ? -ENAMETOOLONG : 0;
+    snprintf(out, size, "%s/pwm%s/%s", chip_paths[motor], PWM_CHANNEL, leaf);
 }
 
 int pwm_init(void)
 {
-    const char *configured_chip = getenv("PWM_CHIP");
-    if (configured_chip && *configured_chip)
-        chip_path = configured_chip;
+    chip = gpiod_chip_open(GPIO_CHIP);
+    if (!chip) {
+        perror("gpiod_chip_open");
+        return 1;
+    }
 
-    const char *channel0 = getenv("PWM_CHANNEL_0");
-    const char *channel1 = getenv("PWM_CHANNEL_1");
-    direction_paths[0] = getenv("PWM_DIRECTION_0");
-    direction_paths[1] = getenv("PWM_DIRECTION_1");
-    if (channel0)
-        channels[0] = atoi(channel0);
-    if (channel1)
-        channels[1] = atoi(channel1);
-
-    for (int motor = 0; motor < PWM_MOTORS; motor++) {
-        char path[256];
-        char channel[16];
-        snprintf(channel, sizeof(channel), "%d", channels[motor]);
-        if (pwm_path(path, sizeof(path), motor, "period") < 0)
-            return -ENAMETOOLONG;
-        if (access(path, F_OK) != 0) {
-            char export_path[256];
-            snprintf(export_path, sizeof(export_path), "%s/export", chip_path);
-            write_value(export_path, channel);
+    for (int m = 0; m < PWM_MOTORS; m++) {
+        dir_line[m] = gpiod_chip_get_line(chip, dir_offsets[m]);
+        if (!dir_line[m] || gpiod_line_request_output(dir_line[m], "mdd10-dir", 1) < 0) {
+            perror("direction line");
+            return 1;
         }
-        if (pwm_path(path, sizeof(path), motor, "period") < 0)
-            return -ENAMETOOLONG;
-        int result = write_value(path, "1000000");
-        if (result < 0)
-            return result;
-        if (pwm_path(path, sizeof(path), motor, "enable") < 0)
-            return -ENAMETOOLONG;
-        result = write_value(path, "1");
-        if (result < 0)
-            return result;
+    }
+
+    for (int m = 0; m < PWM_MOTORS; m++) {
+        char path[256], export_path[256];
+        motor_path(path, sizeof(path), m, "period");
+        if (access(path, F_OK) != 0) {
+            snprintf(export_path, sizeof(export_path), "%s/export", chip_paths[m]);
+            write_sysfs(export_path, PWM_CHANNEL);
+            for (int i = 0; i < 50 && access(path, F_OK) != 0; i++)
+                usleep(20000);
+        }
+    }
+
+    for (int m = 0; m < PWM_MOTORS; m++) {
+        char path[256];
+        motor_path(path, sizeof(path), m, "period");
+        if (write_sysfs(path, PWM_PERIOD_STR) < 0)
+            return 1;
+        motor_path(path, sizeof(path), m, "duty_cycle");
+        if (write_sysfs(path, "0") < 0)
+            return 1;
+        motor_path(path, sizeof(path), m, "enable");
+        if (write_sysfs(path, "1") < 0)
+            return 1;
     }
     initialized = 1;
     return 0;
@@ -105,32 +105,46 @@ int pwm_set_duty(int motor, double duty)
 {
     if (!initialized || motor < 0 || motor >= PWM_MOTORS)
         return -EINVAL;
-    if (duty > 1.0)
-        duty = 1.0;
-    if (duty < -1.0)
-        duty = -1.0;
 
-    if (direction_paths[motor] && *direction_paths[motor]) {
-        int direction = duty < 0.0;
-        int result = write_value(direction_paths[motor], direction ? "1" : "0");
-        if (result < 0)
-            return result;
-    }
+    if (duty > PWM_LIMIT)
+        duty = PWM_LIMIT;
+    else if (duty < -PWM_LIMIT)
+        duty = -PWM_LIMIT;
 
-    char path[256];
-    if (pwm_path(path, sizeof(path), motor, "duty_cycle") < 0)
-        return -ENAMETOOLONG;
-    char duty_cycle[32];
-    snprintf(duty_cycle, sizeof(duty_cycle), "%ld", (long)(fabs(duty) * 1000000.0));
-    return write_value(path, duty_cycle);
+    /* Same polarity as the known-good code: positive -> DIR=1, negative -> DIR=0 */
+    if (duty > 0.0)
+        gpiod_line_set_value(dir_line[motor], 1);
+    else if (duty < 0.0)
+        gpiod_line_set_value(dir_line[motor], 0);
+
+    char path[256], value[32];
+    motor_path(path, sizeof(path), motor, "duty_cycle");
+    snprintf(value, sizeof(value), "%d", (int)(fabs(duty) * PWM_PERIOD_NS));
+    return write_sysfs(path, value);
 }
 
 void pwm_cleanup(void)
 {
-    for (int motor = 0; motor < PWM_MOTORS; motor++) {
+    if (!initialized && !chip)
+        return;
+    for (int m = 0; m < PWM_MOTORS; m++) {
         char path[256];
-        if (pwm_path(path, sizeof(path), motor, "enable") == 0)
-            write_value(path, "0");
+        motor_path(path, sizeof(path), m, "duty_cycle");
+        write_sysfs(path, "0");
+    }
+    usleep(100000);
+    for (int m = 0; m < PWM_MOTORS; m++) {
+        char path[256];
+        motor_path(path, sizeof(path), m, "enable");
+        write_sysfs(path, "0");
+        if (dir_line[m]) {
+            gpiod_line_release(dir_line[m]);
+            dir_line[m] = NULL;
+        }
+    }
+    if (chip) {
+        gpiod_chip_close(chip);
+        chip = NULL;
     }
     initialized = 0;
 }

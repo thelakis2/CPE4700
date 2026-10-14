@@ -4,14 +4,14 @@
 
 #define SPEED_KP 0.004
 
-int speed_control_init(void)
+void speed_control_init(void)
 {
-    return 0;
+    return;
 }
 /*l;kjes;lksw*/
 int speed_control(int motor, double target_speed)
 {
-    double measured_speed = encoder_get_speed(motor);
+    double measured_speed = enc_get_speed(motor);
     double error = target_speed - measured_speed;
     double command = SPEED_KP * error;
 
